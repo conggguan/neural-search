@@ -7,12 +7,14 @@ package org.opensearch.neuralsearch.search.query;
 import java.io.IOException;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 import com.google.common.annotations.VisibleForTesting;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.Query;
+import org.opensearch.common.lucene.search.TopDocsAndMaxScore;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.index.mapper.MapperService;
 import org.opensearch.neuralsearch.query.HybridQuery;
@@ -24,7 +26,10 @@ import org.opensearch.search.query.QueryPhase;
 import org.opensearch.search.query.QueryPhaseSearcherWrapper;
 
 import lombok.extern.log4j.Log4j2;
+import org.opensearch.search.query.QuerySearchResult;
 
+import static org.opensearch.neuralsearch.search.util.NeuralSparseTwoPhaseUtil.getRescoredTopDocsAndMaxScore;
+import static org.opensearch.neuralsearch.search.util.NeuralSparseTwoPhaseUtil.getTwoPhaseQuery;
 import static org.opensearch.neuralsearch.util.HybridQueryUtil.hasAliasFilter;
 import static org.opensearch.neuralsearch.util.HybridQueryUtil.hasNestedFieldOrNestedDocs;
 import static org.opensearch.neuralsearch.util.HybridQueryUtil.isHybridQuery;
@@ -46,7 +51,18 @@ public class HybridQueryPhaseSearcher extends QueryPhaseSearcherWrapper {
     ) throws IOException {
         if (!isHybridQuery(query, searchContext)) {
             validateQuery(searchContext, query);
-            return super.searchWith(searchContext, searcher, query, collectors, hasFilterCollector, hasTimeout);
+            boolean shouldRescore = super.searchWith(searchContext, searcher, query, collectors, hasFilterCollector, hasTimeout);
+            ;
+            final QuerySearchResult queryResult = searchContext.queryResult();
+            TopDocsAndMaxScore topDocsAndMaxScore = queryResult.topDocs();
+            Optional.ofNullable(getTwoPhaseQuery(query))
+                .ifPresent(
+                    secondPhaseQuery -> queryResult.topDocs(
+                        getRescoredTopDocsAndMaxScore(searcher, topDocsAndMaxScore, secondPhaseQuery),
+                        null
+                    )
+                );
+            return shouldRescore;
         } else {
             Query hybridQuery = extractHybridQuery(searchContext, query);
             return super.searchWith(searchContext, searcher, hybridQuery, collectors, hasFilterCollector, hasTimeout);

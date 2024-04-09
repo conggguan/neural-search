@@ -34,4 +34,22 @@ public final class NeuralSearchSettings {
         50,
         Setting.Property.NodeScope
     );
+
+    public static final Setting<Boolean> NEURAL_SPARSE_TWO_PHASE_DISABLED = Setting.boolSetting(
+        "plugins.neural_search.neural_sparse_two_phase_disabled",
+        false,
+        Setting.Property.NodeScope
+    );
+
+    public static final Setting<Integer> NEURAL_SPARSE_TWO_PHASE_WINDOW_SIZE = Setting.intSetting(
+        "plugins.neural_search.neural_sparse_two_phase_window_size",
+        50,
+        Setting.Property.NodeScope
+    );
+
+    public static final Setting<Float> NEURAL_SPARSE_TWO_PHASE_RATIO = Setting.floatSetting(
+        "plugins.neural_search.neural_sparse_two_phase_ratio",
+        0.4f,
+        Setting.Property.NodeScope
+    );
 }

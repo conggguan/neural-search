@@ -22,7 +22,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.BiConsumer;
 import java.util.function.Supplier;
 
+import org.apache.lucene.search.BooleanQuery;
 import org.junit.Before;
+import org.mockito.Mock;
 import org.opensearch.Version;
 import org.opensearch.client.Client;
 import org.opensearch.cluster.service.ClusterService;
@@ -51,14 +53,19 @@ public class NeuralSparseQueryBuilderTests extends OpenSearchTestCase {
 
     private static final String FIELD_NAME = "testField";
     private static final String QUERY_TEXT = "Hello world!";
+    private static final String QUERY_TEXT_LONG_VERSION =
+        "The ID of the sparse encoding model or tokenizer model that will be used to generate vector embeddings from the query text. The model must be deployed in OpenSearch before it can be used in sparse neural search. For more information, see Using custom models within OpenSearch and Neural sparse search.";
     private static final String MODEL_ID = "mfgfgdsfgfdgsde";
     private static final float BOOST = 1.8f;
     private static final String QUERY_NAME = "queryName";
     private static final Supplier<Map<String, Float>> QUERY_TOKENS_SUPPLIER = () -> Map.of("hello", 1.f, "world", 2.f);
+    @Mock
+    private ClusterService clusterService;
 
     @Before
     public void setupClusterServiceToCurrentVersion() {
         setUpClusterService(Version.CURRENT);
+        clusterService = mock(ClusterService.class);
     }
 
     @SneakyThrows
@@ -446,7 +453,7 @@ public class NeuralSparseQueryBuilderTests extends OpenSearchTestCase {
             listener.onResponse(List.of(Map.of("response", List.of(expectedMap))));
             return null;
         }).when(mlCommonsClientAccessor).inferenceSentencesWithMapResult(any(), any(), any());
-        NeuralSparseQueryBuilder.initialize(mlCommonsClientAccessor);
+        NeuralSparseQueryBuilder.initialize(mlCommonsClientAccessor, clusterService);
 
         final CountDownLatch inProgressLatch = new CountDownLatch(1);
         QueryRewriteContext queryRewriteContext = mock(QueryRewriteContext.class);
@@ -486,4 +493,19 @@ public class NeuralSparseQueryBuilderTests extends OpenSearchTestCase {
         ClusterService clusterService = NeuralSearchClusterTestUtils.mockClusterService(version);
         NeuralSearchClusterUtil.instance().initialize(clusterService);
     }
+
+    @SneakyThrows
+    public void testBuildFeatureFieldQueryFormTokens() {
+        NeuralSparseQueryBuilder sparseEncodingQueryBuilder = new NeuralSparseQueryBuilder().fieldName(FIELD_NAME)
+            .queryText(QUERY_TEXT)
+            .modelId(MODEL_ID)
+            .queryTokensSupplier(QUERY_TOKENS_SUPPLIER);
+        BooleanQuery booleanQuery = sparseEncodingQueryBuilder.buildFeatureFieldQueryFormTokens(
+            sparseEncodingQueryBuilder.queryTokensSupplier().get(),
+            FIELD_NAME
+        );
+        assertNotNull(booleanQuery);
+        assertSame(booleanQuery.clauses().size(), 2);
+    }
+
 }
