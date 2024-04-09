@@ -5,11 +5,15 @@
 package org.opensearch.neuralsearch.query;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 import org.apache.commons.lang.StringUtils;
 import org.apache.commons.lang.builder.EqualsBuilder;
@@ -63,9 +67,16 @@ public class NeuralSparseQueryBuilder extends AbstractQueryBuilder<NeuralSparseQ
     static final ParseField QUERY_TEXT_FIELD = new ParseField("query_text");
     @VisibleForTesting
     static final ParseField MODEL_ID_FIELD = new ParseField("model_id");
+    @VisibleForTesting
+    static final Float RESCORE_RATIO = 0.4f;
+    @VisibleForTesting
+    static final ParseField TEST_FLAG = new ParseField("test_flag");
 
     private static MLCommonsClientAccessor ML_CLIENT;
 
+    // write to / read
+    // XContent json->ser
+    //
     public static void initialize(MLCommonsClientAccessor mlClient) {
         NeuralSparseQueryBuilder.ML_CLIENT = mlClient;
     }
@@ -75,6 +86,8 @@ public class NeuralSparseQueryBuilder extends AbstractQueryBuilder<NeuralSparseQ
     private String modelId;
     private Supplier<Map<String, Float>> queryTokensSupplier;
     private static final Version MINIMAL_SUPPORTED_VERSION_DEFAULT_MODEL_ID = Version.V_2_13_0;
+    private final List<BooleanQuery> queries = new ArrayList<>();
+    private static boolean test_flag = false;
 
     /**
      * Constructor from stream input
@@ -106,6 +119,7 @@ public class NeuralSparseQueryBuilder extends AbstractQueryBuilder<NeuralSparseQ
         } else {
             out.writeString(this.modelId);
         }
+
         if (!Objects.isNull(queryTokensSupplier) && !Objects.isNull(queryTokensSupplier.get())) {
             out.writeBoolean(true);
             out.writeMap(queryTokensSupplier.get(), StreamOutput::writeString, StreamOutput::writeFloat);
@@ -113,6 +127,8 @@ public class NeuralSparseQueryBuilder extends AbstractQueryBuilder<NeuralSparseQ
             out.writeBoolean(false);
         }
     }
+
+    // 从 XContent返回一个QueryBuilder
 
     @Override
     protected void doXContent(XContentBuilder xContentBuilder, Params params) throws IOException {
@@ -139,6 +155,7 @@ public class NeuralSparseQueryBuilder extends AbstractQueryBuilder<NeuralSparseQ
      * @throws IOException can be thrown by parser
      */
     public static NeuralSparseQueryBuilder fromXContent(XContentParser parser) throws IOException {
+        test_flag = false;
         NeuralSparseQueryBuilder sparseEncodingQueryBuilder = new NeuralSparseQueryBuilder();
         if (parser.currentToken() != XContentParser.Token.START_OBJECT) {
             throw new ParsingException(parser.getTokenLocation(), "First token of " + NAME + "query must be START_OBJECT");
@@ -147,6 +164,7 @@ public class NeuralSparseQueryBuilder extends AbstractQueryBuilder<NeuralSparseQ
         sparseEncodingQueryBuilder.fieldName(parser.currentName());
         parser.nextToken();
         parseQueryParams(parser, sparseEncodingQueryBuilder);
+
         if (parser.nextToken() != XContentParser.Token.END_OBJECT) {
             throw new ParsingException(
                 parser.getTokenLocation(),
@@ -171,6 +189,7 @@ public class NeuralSparseQueryBuilder extends AbstractQueryBuilder<NeuralSparseQ
                 String.format(Locale.ROOT, "%s field must be provided for [%s] query", MODEL_ID_FIELD.getPreferredName(), NAME)
             );
         }
+
         return sparseEncodingQueryBuilder;
     }
 
@@ -189,6 +208,8 @@ public class NeuralSparseQueryBuilder extends AbstractQueryBuilder<NeuralSparseQ
                     sparseEncodingQueryBuilder.queryText(parser.text());
                 } else if (MODEL_ID_FIELD.match(currentFieldName, parser.getDeprecationHandler())) {
                     sparseEncodingQueryBuilder.modelId(parser.text());
+                } else if (TEST_FLAG.match(currentFieldName, parser.getDeprecationHandler())) {
+                    test_flag = true;
                 } else {
                     throw new ParsingException(
                         parser.getTokenLocation(),
@@ -228,21 +249,20 @@ public class NeuralSparseQueryBuilder extends AbstractQueryBuilder<NeuralSparseQ
             .queryText(queryText)
             .modelId(modelId)
             .queryTokensSupplier(queryTokensSetOnce::get);
+
     }
 
     @Override
     protected Query doToQuery(QueryShardContext context) throws IOException {
         final MappedFieldType ft = context.fieldMapper(fieldName);
         validateFieldType(ft);
-
-        Map<String, Float> queryTokens = queryTokensSupplier.get();
-        validateQueryTokens(queryTokens);
-
-        BooleanQuery.Builder builder = new BooleanQuery.Builder();
-        for (Map.Entry<String, Float> entry : queryTokens.entrySet()) {
-            builder.add(FeatureField.newLinearQuery(fieldName, entry.getKey(), entry.getValue()), BooleanClause.Occur.SHOULD);
+        if (test_flag) {
+            return buildFeatureFieldQueryFormTokens(getAllTokens(), fieldName);
         }
-        return builder.build();
+        return new NeuralSparseQuery(
+            buildFeatureFieldQueryFormTokens(getHighScoreTokens(), fieldName),
+            buildFeatureFieldQueryFormTokens(getLowScoreTokens(), fieldName)
+        );
     }
 
     private static void validateForRewrite(String queryText, String modelId) {
@@ -309,4 +329,45 @@ public class NeuralSparseQueryBuilder extends AbstractQueryBuilder<NeuralSparseQ
     private static boolean isClusterOnOrAfterMinReqVersionForDefaultModelIdSupport() {
         return NeuralSearchClusterUtil.instance().getClusterMinVersion().onOrAfter(MINIMAL_SUPPORTED_VERSION_DEFAULT_MODEL_ID);
     }
+
+        private Map<String, Float> getAllTokens() {
+        Map<String, Float> queryTokens = queryTokensSupplier.get();
+        validateQueryTokens(queryTokens);
+        return queryTokens;
+    }
+
+    private Map<String, Float> getHighScoreTokens() {
+        return getFilteredScoreTokens(true);
+    }
+
+    private Map<String, Float> getLowScoreTokens() {
+        return getFilteredScoreTokens(false);
+    }
+
+    private Map<String, Float> getFilteredScoreTokens(boolean aboveThreshold) {
+        Map<String, Float> queryTokens = queryTokensSupplier.get();
+        validateQueryTokens(queryTokens);
+        float max = queryTokens.values().stream().max(Float::compare).orElse(0f);
+        float threshold = RESCORE_RATIO * max;
+        if (max == 0) {
+            return Collections.emptyMap();
+        }
+        return queryTokens.entrySet()
+            .stream()
+            .filter(entry -> (aboveThreshold == (entry.getValue() > threshold)))
+            .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+    }
+
+    public BooleanQuery buildFeatureFieldQueryFormTokens(Map<String, Float> Tokens, String fieldName) {
+        BooleanQuery.Builder builder = new BooleanQuery.Builder();
+        Collection<BooleanClause> clauses = Collections.synchronizedList(new ArrayList<>());
+        Tokens.forEach((key, value) -> {
+            Query query = FeatureField.newLinearQuery(fieldName, key, value);
+            BooleanClause clause = new BooleanClause(query, BooleanClause.Occur.SHOULD);
+            clauses.add(clause);
+        });
+        clauses.forEach(builder::add);
+        return builder.build();
+    }
+
 }
