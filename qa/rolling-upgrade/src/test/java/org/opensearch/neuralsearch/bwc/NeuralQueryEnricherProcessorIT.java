@@ -50,7 +50,6 @@ public class NeuralQueryEnricherProcessorIT extends AbstractRollingUpgradeTestCa
                     Files.readString(Path.of(classLoader.getResource("processor/SparseIndexMappings.json").toURI())),
                     SPARSE_INGEST_PIPELINE_NAME
                 );
-
                 addSparseEncodingDoc(getIndexNameForTest(), "0", List.of(), List.of(), List.of(TEST_TEXT_FIELD), List.of(TEXT_1));
                 createSearchRequestProcessor(sparseModelId, SPARSE_SEARCH_PIPELINE_NAME);
                 updateIndexSettings(

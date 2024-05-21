@@ -95,7 +95,7 @@ public class NeuralSparseTwoPhaseProcessor extends AbstractProcessor implements 
         QueryBuilder nestedTwoPhaseQueryBuilder = getNestedQueryBuilderFromNeuralSparseQueryBuilderMap(queryBuilderMap);
         nestedTwoPhaseQueryBuilder.boost(getOriginQueryWeightAfterRescore(request.source()));
         // Add it to the rescorer.
-        RescorerBuilder<QueryRescorerBuilder> twoPhaseRescorer = buildRescoreQueryBuilderForTwoPhase(nestedTwoPhaseQueryBuilder,request);
+        RescorerBuilder<QueryRescorerBuilder> twoPhaseRescorer = buildRescoreQueryBuilderForTwoPhase(nestedTwoPhaseQueryBuilder, request);
         request.source().addRescorer(twoPhaseRescorer);
         return request;
     }
@@ -203,7 +203,10 @@ public class NeuralSparseTwoPhaseProcessor extends AbstractProcessor implements 
         return result;
     }
 
-    private RescorerBuilder<QueryRescorerBuilder> buildRescoreQueryBuilderForTwoPhase(final QueryBuilder nestedTwoPhaseQueryBuilder, final SearchRequest searchRequest){
+    private RescorerBuilder<QueryRescorerBuilder> buildRescoreQueryBuilderForTwoPhase(
+        final QueryBuilder nestedTwoPhaseQueryBuilder,
+        final SearchRequest searchRequest
+    ) {
         RescorerBuilder<QueryRescorerBuilder> twoPhaseRescorer = new QueryRescorerBuilder(nestedTwoPhaseQueryBuilder);
         int requestSize = searchRequest.source().size();
         int windowSize = (int) ((requestSize == -1 ? 10 : requestSize) * window_expansion);
